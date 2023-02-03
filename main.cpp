@@ -7,6 +7,7 @@
 #include <fstream>
 #include <cassert>
 #include <vector>
+#include <chrono>
 #include <array>
 #include <ctime>
 #include <map>
@@ -18,7 +19,9 @@ using namespace std;
 
 using u64 = uint64_t;
 
-#if 1
+auto start_t = chrono::system_clock::now();
+
+#if 0
 const char* source = "D:\\tmp\\big.txt";
 const char* destination = "D:\\tmp\\out.txt";
 #else
@@ -188,7 +191,9 @@ int main() {
     cerr << "lines=" << n_lines << '\n';
     process_lines(data, n_lines);
     cerr << "total_proc=" << clock() * 1000.0 / CLOCKS_PER_SEC << " ms.\n";
+    cerr << "sys=" << chrono::duration_cast<chrono::milliseconds>(chrono::system_clock::now() - start_t).count() << " ms.\n";
     create_output();
     cerr << "total_output=" << clock() * 1000.0 / CLOCKS_PER_SEC << " ms.\n";
+    cerr << "sys=" << chrono::duration_cast<chrono::milliseconds>(chrono::system_clock::now() - start_t).count() << " ms.\n";
     return 0;
 }
