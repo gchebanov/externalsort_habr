@@ -12,6 +12,7 @@
 #include <vector>
 #include <chrono>
 #include <array>
+#include <deque>
 #include <ctime>
 #include <map>
 #if _WIN32
@@ -60,7 +61,7 @@ struct fstring {
     bool operator == (const fstring&) const { return false; }
 };
 
-vector<tuple<u64, uint32_t, fstring>> out_idx;
+deque<tuple<u64, uint32_t, fstring>> out_idx;
 
 struct buffered_output {
     array<char, 1<<20> buf;
@@ -189,10 +190,7 @@ struct buffered_input {
     }
 };
 
-void process_lines(u64 total_bytes) {
-    // just reserve *VIRTUAL* memory,
-    // to avoid rellocations and do not calc number of lines;
-    out_idx.reserve(total_bytes / 5);
+void process_lines() {
     auto fin = make_unique<buffered_input>(source);
     u64 line = 0;
     for (string_view data = fin->next(); !data.empty(); data = fin->next()) {
@@ -219,9 +217,7 @@ void process_lines(u64 total_bytes) {
 }
 
 int main() {
-    u64 total_size = get_fsize(source);
-    cerr << "total_input=" << total_size << '\n';
-    process_lines(total_size);
+    process_lines();
     cerr << "total_proc=" << clock() * 1000.0 / CLOCKS_PER_SEC << " ms.\n";
     cerr << "sys=" << chrono::duration_cast<chrono::milliseconds>(chrono::system_clock::now() - start_t).count() << " ms.\n";
     create_output();
