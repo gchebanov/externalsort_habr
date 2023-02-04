@@ -7,6 +7,8 @@
 #include <iostream>
 #include <fstream>
 #include <cassert>
+#include <cstring>
+#include <memory>
 #include <vector>
 #include <chrono>
 #include <array>
@@ -54,8 +56,8 @@ struct fstring {
     operator string_view() const {
         return s.back() == '\0' ? string_view(s.data()) : string_view(s.begin(), s.end());
     }
-    bool operator < (const fstring& other) const { return false; }
-    bool operator == (const fstring& other) const { return false; }
+    bool operator < (const fstring&) const { return false; }
+    bool operator == (const fstring&) const { return false; }
 };
 
 vector<tuple<u64, uint32_t, fstring>> out_idx;
@@ -85,10 +87,11 @@ struct buffered_output {
             flush();
         assert(data.size() <= buf.size());
         memcpy(buf.data() + pos, data.data(), data.size());
-        pos += data.size();
+        pos += static_cast<int>(data.size());
     }
 };
 
+#if _WIN32
 struct UTFCmp {
     UCollator* uc;
     UTFCmp(): uc(nullptr) {
@@ -106,14 +109,15 @@ struct UTFCmp {
         UErrorCode ec = UErrorCode::U_ZERO_ERROR;
         auto res = ucol_strcollUTF8(
                 uc,
-                lhs.data(), lhs.size(),
-                rhs.data(), rhs.size(),
+                lhs.data(), static_cast<int>(lhs.size()),
+                rhs.data(), static_cast<int>(rhs.size()),
                 &ec
         );
         assert(ec <= 0);
         return res == UCOL_LESS;
     }
 } utfCmp;
+#endif
 
 void create_output() {
     auto tp = chrono::system_clock::now();
@@ -121,7 +125,11 @@ void create_output() {
     for (u64 i = 0; i < idx.size(); ++i)
         idx[i] = i;
     sort(idx.begin(), idx.end(), [&] (u64 i, u64 j) {
+#ifdef _WIN32
         return utfCmp(vec_keys[i], vec_keys[j]);
+#else
+        return vec_keys[i] < vec_keys[j];
+#endif
     });
     vector<u64> inv_idx(idx.size());
     for (u64 i = 0; i < idx.size(); ++i) {
