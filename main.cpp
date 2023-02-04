@@ -1,4 +1,5 @@
 // Inspired by https://habr.com/ru/post/714524/
+#undef NDEBUG
 
 #include <string_view>
 #include <algorithm>
@@ -12,7 +13,7 @@
 #include <ctime>
 #include <map>
 #if _WIN32
-#include <windows.h>
+#include <icu.h>
 #endif
 
 using namespace std;
@@ -22,45 +23,19 @@ using u64 = uint64_t;
 auto start_t = chrono::system_clock::now();
 
 #if 0
-const char* source = "D:\\tmp\\big.txt";
-const char* destination = "D:\\tmp\\out.txt";
+const char* source = "D:\\tmp\\small.txt";
+const char* destination = "D:\\tmp\\output.txt";
 #else
 const char* source = "D:\\tmp\\bigdata.txt";
 const char* destination = "D:\\tmp\\output.txt";
 #endif
-const char* tmp = "D:\\tmp\\";
 
-string_view get_mmaped(const char* filename) {
+u64 get_fsize(const char* filename) {
     ifstream ifs(filename, ios::binary);
     assert(ifs);
     ifs.seekg(0, ios::end);
     assert(ifs);
-    auto sz = ifs.tellg();
-    ifs.seekg(0, ios::beg);
-    ifs.close();
-#if _WIN32
-    auto err = ::GetLastError();
-    assert(err == 0);
-    auto fhd = ::CreateFile(filename, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    err = ::GetLastError();
-    assert(err == 0);
-    assert(fhd);
-    auto mhd = ::CreateFileMapping(fhd, NULL, PAGE_READONLY, 0, 0, NULL);
-    err = ::GetLastError();
-    assert(err == 0);
-    assert(mhd);
-    auto raw = reinterpret_cast<const char*>(::MapViewOfFile(mhd, FILE_MAP_READ, 0, 0, sz));
-    err = ::GetLastError();
-    assert(err == 0);
-    assert(raw);
-    return string_view{raw, raw + sz};
-#endif
-}
-
-u64 get_lines(string_view data) {
-    u64 n_lines = 0;
-    for (char c: data) if (c == '\n') ++n_lines;
-    return n_lines;
+    return ifs.tellg();
 }
 
 map<string, u64, less<>> all_keys;
@@ -114,12 +89,38 @@ struct buffered_output {
     }
 };
 
+struct UTFCmp {
+    UCollator* uc;
+    UTFCmp(): uc(nullptr) {
+        UErrorCode ec = UErrorCode::U_ZERO_ERROR;
+        uc = ucol_open("en_US", &ec);
+        assert(uc != nullptr);
+        assert(ec <= 0); // negative codes not an error
+    }
+    ~UTFCmp() {
+        if (uc) {
+            ucol_close(uc);
+        }
+    }
+    bool operator ()(string_view lhs, string_view rhs) const {
+        UErrorCode ec = UErrorCode::U_ZERO_ERROR;
+        auto res = ucol_strcollUTF8(
+                uc,
+                lhs.data(), lhs.size(),
+                rhs.data(), rhs.size(),
+                &ec
+        );
+        assert(ec <= 0);
+        return res == UCOL_LESS;
+    }
+} utfCmp;
+
 void create_output() {
     vector<u64> idx(vec_keys.size());
     for (u64 i = 0; i < idx.size(); ++i)
         idx[i] = i;
     sort(idx.begin(), idx.end(), [&] (u64 i, u64 j) {
-        return vec_keys[i] < vec_keys[j]; // TODO add utf-8 compare
+        return utfCmp(vec_keys[i], vec_keys[j]);
     });
     vector<u64> inv_idx(idx.size());
     for (u64 i = 0; i < idx.size(); ++i) {
@@ -130,7 +131,7 @@ void create_output() {
     }
     sort(out_idx.begin(), out_idx.end());
     auto ofs = make_unique<buffered_output>(destination);
-    string_view sep = ": ", end = "\n";
+    string_view sep = ". ", end = "\n";
     for (auto [i, e_key, o_key]: out_idx) {
         ofs->append(o_key);
         ofs->append(sep);
@@ -152,44 +153,59 @@ auto get_key(string_view key) {
     return pit.first->second;
 }
 
-void process_lines(string_view data, u64 n_lines) {
-    out_idx.reserve(n_lines);
-    cerr << (out_idx.capacity() * sizeof(out_idx[0]) >> 20) << " extra Mib\n";
+struct buffered_input {
+    array<char, 1 << 24> buf;
+    ifstream ifs;
+    buffered_input(const char* filename) : buf(), ifs(filename, ios::binary) {
+    }
+    string_view next() {
+        if (ifs) {
+            ifs.read(buf.data(), buf.size());
+            auto count = ifs.gcount();
+            streamoff off = 0;
+            while (count + off > 0 && buf[count + off - 1] != '\n') {
+                off -= 1;
+            }
+            ifs.seekg(off, ios::cur);
+            return string_view{buf.data(), buf.data() + count + off};
+        }
+        return string_view{};
+    }
+};
+
+void process_lines(u64 total_bytes) {
+    // just reserve *VIRTUAL* memory,
+    // to avoid rellocations and do not calc number of lines;
+    out_idx.reserve(total_bytes / 5);
+    auto fin = make_unique<buffered_input>(source);
     u64 line = 0;
-    for (u64 p = 0, p1 = 0, p2 = 0; p < data.size(); ++p) {
-        if (data[p] == '\n') {
-            auto key = get_key(data.substr(p1, p - p1));
-            size_t stoi_ptr;
-            uint32_t e_key;
-            auto [ptr, ec] = std::from_chars(data.data() + p2, data.data() + p1 - 2, e_key);
-            assert(ec == errc{0});
-            assert(ptr == data.data() + p1 - 2);
-            out_idx.emplace_back(key, e_key, data.substr(p2, p1 - 2 - p2));
-            ++line;
-            p2 = p + 1;
-        } else if (data[p] == '.') {
-            if (p1 <= p2) {
-                assert(data[p + 1] == ' ');
-                p1 = p + 2;
+    for (string_view data = fin->next(); !data.empty(); data = fin->next()) {
+        for (u64 p = 0, p1 = 0, p2 = 0; p < data.size(); ++p) {
+            if (data[p] == '\n') {
+                auto key = get_key(data.substr(p1, p - p1));
+                uint32_t e_key;
+                auto[ptr, ec] = std::from_chars(data.data() + p2, data.data() + p1 - 2, e_key);
+                assert(ec == errc{0});
+                assert(ptr == data.data() + p1 - 2);
+                out_idx.emplace_back(key, e_key, data.substr(p2, p1 - 2 - p2));
+                ++line;
+                p2 = p + 1;
+            } else if (data[p] == '.') {
+                if (p1 <= p2) {
+                    assert(data[p + 1] == ' ');
+                    p1 = p + 2;
+                }
             }
         }
     }
     cerr << "all_keys=" << all_keys.size() << '\n';
+    cerr << "out_idx=" << out_idx.size() << '\n';
 }
 
 int main() {
-    auto data = get_mmaped(source);
-    cerr << (uintptr_t)(data.data()) << ' ' << data.size() << '\n';
-    if (0) {
-        u64 cut = 1e9;
-        while (data[cut] != '\n') ++cut;
-        data = data.substr(0, cut + 1);
-    }
-    cerr << "total_input=" << data.size() << '\n';
-//    auto n_lines = get_lines(data);
-    auto n_lines = 463523186ULL;
-    cerr << "lines=" << n_lines << '\n';
-    process_lines(data, n_lines);
+    u64 total_size = get_fsize(source);
+    cerr << "total_input=" << total_size << '\n';
+    process_lines(total_size);
     cerr << "total_proc=" << clock() * 1000.0 / CLOCKS_PER_SEC << " ms.\n";
     cerr << "sys=" << chrono::duration_cast<chrono::milliseconds>(chrono::system_clock::now() - start_t).count() << " ms.\n";
     create_output();
