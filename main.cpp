@@ -116,6 +116,7 @@ struct UTFCmp {
 } utfCmp;
 
 void create_output() {
+    auto tp = chrono::system_clock::now();
     vector<u64> idx(vec_keys.size());
     for (u64 i = 0; i < idx.size(); ++i)
         idx[i] = i;
@@ -126,18 +127,25 @@ void create_output() {
     for (u64 i = 0; i < idx.size(); ++i) {
         inv_idx[idx[i]] = i;
     }
+    cerr << "unique string utf-8 sort sys=" << chrono::duration_cast<chrono::milliseconds>(chrono::system_clock::now() - tp).count() << " ms.\n";
+    tp = chrono::system_clock::now();
     for (auto& e: out_idx) {
         get<0>(e) = inv_idx[get<0>(e)];
     }
     sort(out_idx.begin(), out_idx.end());
-    auto ofs = make_unique<buffered_output>(destination);
-    string_view sep = ". ", end = "\n";
-    for (auto [i, e_key, o_key]: out_idx) {
-        ofs->append(o_key);
-        ofs->append(sep);
-        ofs->append(vec_keys[idx[i]]);
-        ofs->append(end);
-    }
+    cerr << "all lines in-memory sort sys=" << chrono::duration_cast<chrono::milliseconds>(chrono::system_clock::now() - tp).count() << " ms.\n";
+    tp = chrono::system_clock::now();
+    {
+        auto ofs = make_unique<buffered_output>(destination);
+        string_view sep = ". ", end = "\n";
+        for (auto[i, e_key, o_key]: out_idx) {
+            ofs->append(o_key);
+            ofs->append(sep);
+            ofs->append(vec_keys[idx[i]]);
+            ofs->append(end);
+        }
+    } // flush output
+    cerr << "format output sys=" << chrono::duration_cast<chrono::milliseconds>(chrono::system_clock::now() - tp).count() << " ms.\n";
 }
 
 auto get_key(string_view key) {
